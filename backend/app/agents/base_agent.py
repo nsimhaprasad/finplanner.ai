@@ -32,13 +32,17 @@ class BaseFinancialAgent(ABC):
     def __init__(self, name: str, model: str = "gemini-1.5-flash"):
         self.name = name
         self.model = model
+        # Debug API key
+        api_key = os.getenv("GOOGLE_API_KEY")
+        logger.info(f"[{self.name}] API key present: {bool(api_key)}")
+        logger.info(f"[{self.name}] API key length: {len(api_key) if api_key else 0}")
+        
         self.llm = ChatGoogleGenerativeAI(
             model=model,  # gemini-1.5-flash (fast) or gemini-1.5-pro (powerful)
             temperature=0.1,  # Low temperature for consistent financial advice
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            google_api_key=api_key,
             convert_system_message_to_human=True,  # Gemini compatibility
-            timeout=30,  # 30 second timeout
-            max_retries=1  # Only retry once
+            # Remove timeout and max_retries to use defaults
         )
     
     @abstractmethod
@@ -73,7 +77,18 @@ class BaseFinancialAgent(ABC):
                     result = chain.invoke({"input": prompt, **kwargs})
                 
                 logger.info(f"[{self.name}] LLM call completed successfully")
-                return result.content
+                logger.info(f"[{self.name}] Raw LLM response: {repr(result.content)}")
+                logger.info(f"[{self.name}] Response length: {len(result.content) if result.content else 0}")
+                
+                if not result.content or not result.content.strip():
+                    logger.error(f"[{self.name}] LLM returned empty response")
+                    raise Exception("LLM returned empty response")
+                
+                # Clean the response (remove markdown formatting)
+                cleaned_response = self._clean_llm_response(result.content)
+                logger.info(f"[{self.name}] Cleaned response: {repr(cleaned_response)}")
+                
+                return cleaned_response
             except TimeoutError as te:
                 logger.error(f"[{self.name}] LLM call timed out: {str(te)}")
                 raise Exception(f"LLM call timed out after 30 seconds")
@@ -82,9 +97,21 @@ class BaseFinancialAgent(ABC):
             logger.error(f"[{self.name}] LLM invocation failed: {str(e)}")
             logger.error(f"[{self.name}] Exception type: {type(e).__name__}")
             
-            # Return mock data instead of failing
-            logger.warning(f"[{self.name}] Falling back to mock data")
-            return self._get_fallback_response()
+            # Don't fall back - let the error propagate to force fixing the real issue
+            raise Exception(f"LLM call failed in {self.name}: {str(e)}")
+    
+    def _clean_llm_response(self, response: str) -> str:
+        """Clean LLM response by removing markdown formatting"""
+        import re
+        
+        # Remove markdown code blocks (```json ... ``` or ``` ... ```)
+        response = re.sub(r'^```(?:json)?\s*\n', '', response, flags=re.MULTILINE)
+        response = re.sub(r'\n```\s*$', '', response, flags=re.MULTILINE)
+        
+        # Remove any leading/trailing whitespace
+        response = response.strip()
+        
+        return response
     
     def _get_fallback_response(self) -> str:
         """Provide fallback response when LLM fails"""
