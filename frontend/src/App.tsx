@@ -45,13 +45,15 @@ function App() {
 
       setPortfolioData(response.data);
       
-      // Automatically analyze portfolio after successful upload
-      const analysisResponse = await axios.post(
-        `${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/analyze-portfolio`,
-        response.data.data
-      );
+      // Debug: Log the response structure
+      console.log('Full response:', response.data);
+      console.log('Response data:', response.data.data);
+      console.log('Analysis data:', response.data.data?.analysis);
       
-      setAnalysis(analysisResponse.data.analysis);
+      // Analysis is already included in the upload response
+      if (response.data.data && response.data.data.analysis) {
+        setAnalysis(response.data.data.analysis);
+      }
     } catch (err: any) {
       console.error('Upload error:', err);
       if (err.response?.data?.error_type === 'password_required') {

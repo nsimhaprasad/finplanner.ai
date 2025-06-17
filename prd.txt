@@ -1,0 +1,95 @@
+Project: Multi-Agent Financial Advisor
+This document outlines a phased approach to building your financial analysis web app using Python on Google Cloud.
+Part 1: Foundational Setup (Prerequisites)
+Before writing the first line of agent code, you need to set up your environment.
+1. Google Cloud Services:
+Cloud Storage: To store the uploaded NSDL CAS PDF files.
+Cloud Functions (or Cloud Run): To host each of your Python-based agents. Cloud Functions are perfect for this, as each agent can be a separate, event-driven function.
+Secret Manager: To securely store the default password for CAS statements (which is often the user's PAN in uppercase) or any API keys for market data.
+IAM (Identity and Access Management): To ensure secure communication between your services.
+2. Python Environment & Key Libraries:
+You will need a requirements.txt file. Start with these essential libraries:
+google-cloud-storage: For file operations.
+pdfplumber: An excellent library for extracting text and tables from PDFs. It handles password-protected files well. PyPDF2 is an alternative.
+pandas: For data manipulation and analysis once the data is extracted.
+fastapi or flask: To create a simple API endpoint for the user to upload their file.
+Part 2: Phased Implementation & User Stories
+We will build the system in four distinct phases. Each phase delivers a tangible piece of functionality.
+Phase 1: Core Functionality - PDF Parsing & Data Extraction
+Goal: Successfully upload a (potentially password-protected) PDF and extract the user's holdings into a structured format.
+
+
+Epic
+User Story ID
+User Story Description
+Technical Details & Key Libraries
+Portfolio Data Extraction
+1.1
+As a user, I want to upload my NSDL CAS PDF file so that the system can begin analyzing it.
+Create a simple web frontend (HTML form) and a FastAPI endpoint on Cloud Run/Function that accepts file uploads and saves them to a Google Cloud Storage bucket.
+
+
+1.2
+As a user, I want the system to try a default password (my PAN) and, if that fails, prompt me to enter the correct password so that my secure document can be unlocked.
+Use pdfplumber.open(file, password=...). Wrap this in a try...except block to catch password errors (pdfplumber.pdfminer.pdfdocument.PDFPasswordIncorrect). If an error occurs, the API should return a response asking the frontend to prompt for a password.
+
+
+1.3
+As a developer, I want the CAS_Parser_Agent to read the decrypted PDF text and extract all my holdings (Stocks, MFs) into a structured JSON format so that it can be processed by other agents.
+Use pandas to read tables extracted by pdfplumber. Write logic to identify sections for Equity, Mutual Funds, etc., and convert them into a clean JSON object. This is the most data-intensive part.
+
+Phase 2: First Analysis - Portfolio Health Check
+Goal: Provide the user with immediate, valuable insights about their current portfolio.
+Epic
+User Story ID
+User Story Description
+Technical Details & Key Libraries
+Current Portfolio Assessment
+2.1
+As a user, I want to see a clear, visual breakdown of my portfolio's asset allocation (e.g., 60% Equity, 30% Debt, 10% Other) so that I can understand my current investment mix at a glance.
+The Portfolio_Analysis_Agent will take the JSON from Phase 1. Use pandas to categorize assets and calculate the percentage weights. The frontend can use a simple chart library (like Chart.js) to visualize this.
+
+
+2.2
+As a user, I want to see a sector-wise breakdown of my equity holdings (e.g., 25% IT, 20% Banking) so that I can easily identify if I am overly concentrated in one area.
+This requires mapping stocks to their sectors. The Portfolio_Analysis_Agent might need an external data source or a pre-built dictionary for this. Again, use pandas for grouping and calculations.
+
+Phase 3: Adding Context - Market & User Profile
+Goal: Enrich the analysis with external market data and user-specific information.
+Epic
+User Story ID
+User Story Description
+Technical Details & Key Libraries
+Context Integration
+3.1
+As a developer, I want the Market_Outlook_Agent to fetch current market trends (e.g., Nifty 50 performance, sector indices) from a reliable financial data API so that recommendations are timely and relevant.
+Use a library like requests to call a financial data API (e.g., Polygon.io, Alpha Vantage). Store the API key in Google Secret Manager. The agent should summarize the data into a simple "outlook" object (e.g., { "overall": "Bullish", "sectors_to_watch": ["Banking", "Infra"] }).
+
+
+3.2
+As a user, I want to answer a short questionnaire (3-5 questions) about my age, financial goals, and risk tolerance so that the system can provide recommendations that match my personality.
+The Risk_Profiler_Agent will implement a simple scoring model. E.g., "How would you react to a 20% loss?" -> (a) Sell everything (Low Risk), (b) Do nothing (Medium Risk), (c) Invest more (High Risk). Output a simple risk profile like "Aggressive".
+
+Phase 4: The Synthesis - Goals & Recommendations
+Goal: Bring all the analysis together to provide the final, actionable advice.
+Epic
+User Story ID
+User Story Description
+Technical Details & Key Libraries
+Personalized Recommendation Generation
+4.1
+As a developer, I want the Orchestrator_Agent to manage the entire workflow, calling each specialist agent in the correct order and passing the data between them so that the final analysis is correctly synthesized.
+This is the "main" function. It will trigger the Parser, then the Analyst, Market Researcher, and Profiler. It will then pass all their outputs to the final Advisor agent. This can be a master Cloud Function.
+
+
+4.2
+As a user, I want the Financial_Advisor_Agent to use all the available information (my portfolio, my risk profile, market outlook) to generate a short list of personalized investment goals.
+This is the core AI/logic. The agent will have rules like: IF portfolio.concentration.IT > 40% AND user.risk_profile == 'Moderate' THEN create_goal('Reduce IT Sector Concentration'). This can start with simple rules and become more complex later.
+
+
+4.3
+As a user, I want to see the final goals and specific, actionable recommendations (e.g., "Consider selling 10 units of X stock and buying a Nifty 50 ETF") in a clear dashboard so that I know exactly what steps to take next.
+The frontend's job is to take the final JSON output from the Orchestrator_Agent and display it in a clean, readable format.
+
+
+

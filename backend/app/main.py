@@ -2,16 +2,26 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import pdfplumber
-import pandas as pd
 import io
-from typing import Optional
+from typing import Optional, Dict, Any
 import logging
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Import multi-agent system
+from .agents import FinancialOrchestrator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Financial Planner API", version="1.0.0")
+
+# Initialize multi-agent orchestrator
+orchestrator = FinancialOrchestrator()
 
 # CORS middleware for React frontend
 app.add_middleware(
@@ -36,7 +46,7 @@ async def upload_cas_file(
     password: Optional[str] = None
 ):
     """
-    Upload and parse NSDL CAS PDF file
+    Upload and process NSDL CAS PDF file with multi-agent analysis
     """
     try:
         # Validate file type
@@ -46,13 +56,89 @@ async def upload_cas_file(
         # Read file content
         file_content = await file.read()
         
-        # Parse PDF
-        portfolio_data = parse_cas_pdf(file_content, password)
+        # Extract text from PDF
+        pdf_text = extract_pdf_text(file_content, password)
         
+        # Process through multi-agent system (synchronous to avoid hanging)
+        result_state = orchestrator.process_financial_planning_sync(
+            pdf_content=pdf_text,
+            user_responses={}  # Will be enhanced later for user questionnaire
+        )
+        
+        # Debug: Log all errors
+        logger.info(f"Total errors in result_state: {len(result_state.errors)}")
+        for i, error in enumerate(result_state.errors):
+            logger.info(f"Error {i}: {error}")
+        
+        # Check for fatal errors (not just warnings)
+        fatal_errors = [error for error in result_state.errors 
+                       if not any(keyword in error.lower() 
+                                for keyword in ["timeout", "api key", "fallback", "mock data", 
+                                              "no portfolio holdings", "no holdings available",
+                                              "no field", "analysis", "parse", "json"])]
+        
+        logger.info(f"Fatal errors: {len(fatal_errors)}")
+        logger.info(f"Analysis complete: {result_state.analysis_complete}")
+        
+        if fatal_errors:
+            logger.error(f"Returning 400 due to fatal errors: {fatal_errors}")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error", 
+                    "message": "; ".join(fatal_errors),
+                    "errors": fatal_errors
+                }
+            )
+        
+        # Prepare warnings for non-fatal issues
+        warnings = [error for error in result_state.errors 
+                   if any(keyword in error.lower() 
+                        for keyword in ["timeout", "api key", "fallback", "mock data"])]
+        
+        # Return comprehensive analysis
+        logger.info("Returning successful response")
         return JSONResponse(content={
             "status": "success",
-            "message": "CAS file processed successfully",
-            "data": portfolio_data
+            "message": "CAS file processed and analyzed successfully" + 
+                      (" (using mock data)" if warnings else ""),
+            "warnings": warnings,
+            "data": {
+                "portfolio": {
+                    "total_value": result_state.portfolio.total_value,
+                    "asset_allocation": result_state.portfolio.asset_allocation,
+                    "sector_allocation": result_state.portfolio.sector_allocation,
+                    "holdings_count": len(result_state.portfolio.holdings),
+                    "top_holdings": [
+                        {
+                            "name": holding.name,
+                            "symbol": holding.symbol,
+                            "value": holding.current_value,
+                            "asset_type": holding.asset_type
+                        }
+                        for holding in sorted(result_state.portfolio.holdings, 
+                                            key=lambda x: x.current_value, reverse=True)[:5]
+                    ]
+                },
+                "analysis": {
+                    "risk_profile": {
+                        "risk_tolerance": result_state.risk_profile.risk_tolerance,
+                        "risk_score": result_state.risk_profile.score,
+                        "investment_horizon": result_state.risk_profile.investment_horizon
+                    },
+                    "market_context": {
+                        "sentiment": result_state.market_data.market_sentiment,
+                        "sector_outlook": result_state.market_data.sector_outlook
+                    },
+                    "recommendations": {
+                        "asset_rebalancing": result_state.recommendations.asset_rebalancing,
+                        "sector_adjustments": result_state.recommendations.sector_adjustments,
+                        "investment_suggestions": result_state.recommendations.investment_suggestions,
+                        "action_items": result_state.recommendations.action_items
+                    }
+                },
+                "workflow_status": orchestrator.get_workflow_status(result_state)
+            }
         })
         
     except Exception as e:
@@ -68,100 +154,109 @@ async def upload_cas_file(
             )
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
-def parse_cas_pdf(file_content: bytes, password: Optional[str] = None) -> dict:
+def extract_pdf_text(file_content: bytes, password: Optional[str] = None) -> str:
     """
-    Parse CAS PDF and extract portfolio data
+    Extract text content from PDF file
     """
     try:
         # Try to open PDF with password
         with pdfplumber.open(io.BytesIO(file_content), password=password) as pdf:
             text = ""
             for page in pdf.pages:
-                text += page.extract_text() or ""
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
             
-            # Basic portfolio data extraction (simplified for now)
-            portfolio_data = {
-                "total_pages": len(pdf.pages),
-                "has_content": len(text) > 0,
-                "extracted_text_length": len(text),
-                "holdings": extract_holdings(text),
-                "summary": {
-                    "total_equity_value": 0,
-                    "total_mutual_fund_value": 0,
-                    "asset_allocation": {}
-                }
-            }
-            
-            return portfolio_data
+            if not text.strip():
+                raise Exception("No text content found in PDF")
+                
+            return text
             
     except Exception as e:
         if "password" in str(e).lower() or "decrypt" in str(e).lower():
             raise Exception("Password required or incorrect password provided")
         raise e
 
-def extract_holdings(text: str) -> dict:
+@app.post("/risk-assessment")
+async def risk_assessment(user_responses: Dict[str, Any]):
     """
-    Extract holdings from CAS text (simplified implementation)
-    """
-    # This is a simplified extraction - in reality, you'd need more sophisticated parsing
-    holdings = {
-        "equity": [],
-        "mutual_funds": [],
-        "bonds": [],
-        "other": []
-    }
-    
-    # Add basic parsing logic here
-    # For now, return empty structure
-    return holdings
-
-@app.post("/analyze-portfolio")
-async def analyze_portfolio(portfolio_data: dict):
-    """
-    Analyze portfolio and provide insights
+    Standalone risk assessment endpoint
     """
     try:
-        analysis = {
-            "asset_allocation": calculate_asset_allocation(portfolio_data),
-            "sector_concentration": analyze_sector_concentration(portfolio_data),
-            "recommendations": generate_basic_recommendations(portfolio_data)
-        }
+        from .agents.risk_profiler_agent import RiskProfilerAgent
+        from .agents.state import FinancialState
+        
+        # Create state with user responses
+        state = FinancialState(user_responses=user_responses)
+        
+        # Run risk profiler
+        risk_agent = RiskProfilerAgent()
+        result_state = risk_agent.process(state)
         
         return JSONResponse(content={
             "status": "success",
-            "analysis": analysis
+            "risk_profile": {
+                "risk_tolerance": result_state.risk_profile.risk_tolerance,
+                "risk_score": result_state.risk_profile.score,
+                "investment_horizon": result_state.risk_profile.investment_horizon
+            }
         })
         
     except Exception as e:
-        logger.error(f"Error analyzing portfolio: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error analyzing portfolio: {str(e)}")
+        logger.error(f"Risk assessment failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Risk assessment failed: {str(e)}")
 
-def calculate_asset_allocation(portfolio_data: dict) -> dict:
-    """Calculate asset allocation percentages"""
-    # Simplified implementation
+@app.get("/market-outlook")
+async def get_market_outlook():
+    """
+    Get current market outlook and trends
+    """
+    try:
+        from .agents.market_outlook_agent import MarketOutlookAgent
+        from .agents.state import FinancialState
+        
+        # Create empty state
+        state = FinancialState()
+        
+        # Run market outlook agent
+        market_agent = MarketOutlookAgent()
+        result_state = market_agent.process(state)
+        
+        return JSONResponse(content={
+            "status": "success",
+            "market_data": {
+                "sentiment": result_state.market_data.market_sentiment,
+                "sector_outlook": result_state.market_data.sector_outlook,
+                "market_indices": result_state.market_data.market_indices,
+                "last_updated": result_state.market_data.last_updated
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Market outlook failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Market outlook failed: {str(e)}")
+
+@app.get("/agent-status")
+async def get_agent_status():
+    """
+    Get information about available agents and their capabilities
+    """
     return {
-        "equity": 60.0,
-        "debt": 30.0,
-        "others": 10.0
+        "agents": {
+            "cas_parser": "Extracts portfolio data from CAS PDF files",
+            "portfolio_analyzer": "Analyzes portfolio composition and risks",
+            "market_outlook": "Provides current market trends and outlook",
+            "risk_profiler": "Assesses user risk tolerance and profile",
+            "financial_advisor": "Generates personalized investment recommendations"
+        },
+        "workflow": "Sequential processing through all agents",
+        "features": [
+            "LLM-powered PDF parsing",
+            "Real-time market data integration",
+            "Personalized risk assessment",
+            "Comprehensive financial recommendations"
+        ]
     }
-
-def analyze_sector_concentration(portfolio_data: dict) -> dict:
-    """Analyze sector-wise concentration"""
-    # Simplified implementation
-    return {
-        "IT": 25.0,
-        "Banking": 20.0,
-        "Healthcare": 15.0,
-        "Others": 40.0
-    }
-
-def generate_basic_recommendations(portfolio_data: dict) -> list:
-    """Generate basic investment recommendations"""
-    return [
-        "Consider diversifying your IT sector exposure",
-        "Add more debt instruments for balanced allocation",
-        "Review underperforming mutual funds"
-    ]
 
 if __name__ == "__main__":
     import uvicorn

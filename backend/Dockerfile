@@ -1,3 +1,4 @@
+# Try official Python image from different registry if needed
 FROM python:3.11-slim
 
 WORKDIR /app
